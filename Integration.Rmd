@@ -1,0 +1,190 @@
+---
+title: "Integration"
+author: "Jackie"
+date: '2023-02-06'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_knit$set(root.dir = '~/test')
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+```{r libarary}
+library(mHG)
+library(meta)
+library(HardyWeinberg)
+library(tidyverse)
+```
+
+### The cor_merge function computes the correlation coefficient between a targeted gene and all genes in two scRNA-seq datasets, integrates the coefficients using meta-analysis, and returns the combined correlation coefficients.
+
+- x: Matrix 1
+- y: Matrix 2
+- r: Correlation coefficient cut-off threshold. Default is 0.6
+- greater: If TRUE, return a list with genes with more than the threshold r (default); otherwise, a list with genes with less than the threshold r
+- gene: The targeted gene.
+```{r cor_merge function}
+cor_merge <- function(x,y,r=0.6,greater=TRUE,gene='P2ry12'){
+  n1 <- ncol(x)
+  n2 <- ncol(y)
+  P2_1 <- x[gene,]
+  P2_2 <- y[gene,]
+  tmp_cor_1 <- apply(x, 1, function(k){
+    cor(P2_1,k)
+  })
+  tmp_cor_2 <- apply(y, 1, function(k){
+    cor(P2_2,k)
+  })
+  
+  
+  tmp_cor_1 <- apply(x, 1, function(k){
+    cor(P2_1,k)
+  })
+  tmp_cor_1 <- data.frame(tmp_cor_1)
+  tmp_cor_1$name <- rownames(tmp_cor_1)
+  
+  tmp_cor_2 <- apply(y, 1, function(k){
+    cor(P2_2,k)
+  })
+  tmp_cor_2 <- data.frame(tmp_cor_2)
+  tmp_cor_2$name <- rownames(tmp_cor_2)
+  
+  tmp_merge <- merge(tmp_cor_1,tmp_cor_2,'name')
+  
+  tmp <- apply(tmp_merge,1,function(y){
+    if(sum(is.na(y))==2){
+      c(y[1],NaN)
+    }
+    
+    else if(sum(is.na(y))==1){
+      c(y[!is.na(y)])
+    }
+    
+    else if(y[2]==y[3]){
+      c(y[1],y[2])
+    }
+    else if( abs(as.numeric(y[2])) < 0.5 & abs(as.numeric(y[3])) < 0.5){
+      c(y[1],NaN)
+    }
+    
+    else{
+      tmp <- metacor(c(as.numeric(y[2]),as.numeric(y[3])),c(n1,n2))
+      postcor <- ifisherz(tmp[["TE.random"]])
+      final=c(y[1],postcor)}
+  })
+  tmp <- data.frame(t(tmp))
+  colnames(tmp)=c('genenames','value')
+  tmp$value <- as.numeric(tmp$value)
+  tmp = na.omit(tmp)
+  ifelse(greater==T, tmp <- subset(tmp,value>r),tmp <- subset(tmp,value<r))
+  return(tmp)
+}
+```
+### Load microglial matrix in various groups using multiple scRNA-seq data sets.
+```{r load scRNA-seq data}
+Microglia_GSE167593_Sham_matrix <- readRDS('Microglia_GSE167593_Sham_matrix.rds')
+Microglia_GSE167593_MCAO_matrix <- readRDS('Microglia_GSE167593_MCAO_matrix.rds')
+Microglia_GSE174574_Sham_matrix <- readRDS('Microglia_GSE174574_Sham_matrix.rds')
+Microglia_GSE174574_MCAO_matrix <- readRDS('Microglia_GSE174574_MCAO_matrix.rds')
+```
+### The cor_merge function is used to integrate the P2ry12 correlation with other genes by calculating and merging their correlations.
+```{r correlation analysis}
+microglia_sham <- cor_merge(Microglia_GSE167593_Sham_matrix,Microglia_GSE174574_Sham_matrix,gene = 'P2ry12')
+microglia_mcao <- cor_merge(Microglia_GSE167593_MCAO_matrix,Microglia_GSE174574_MCAO_matrix,gene = 'P2ry12')
+```
+### To identify genes positively correlated with microglial P2ry12 that are shared in both MCAO and Sham groups.
+```{r merge data}
+sc_data_results <- merge(microglia_mcao,microglia_sham,'genenames',suffixes = c(".MCAO",".Sham"))
+```
+### To load the microglia bulk-seq data that has been sorted and integrated using the Rank-in method.
+```{r load bulk-seq}
+dat <- read.table('result_exp.txt')
+dat_sham <- dat[1:5]
+dat_mcao <- dat[6:12]
+```
+### Calculate correlation coefficient in Sham and MCAO groups.
+```{r correlation analysis for bulk-seq}
+p2_dat_sham <- as.numeric(dat_sham['P2ry12',])
+p2_dat_mcao <- as.numeric(dat_mcao['P2ry12',])
+cor_dat_sham <- cor(p2_dat_sham,t(dat_sham))
+cor_dat_sham <- data.frame(t(cor_dat_sham))
+cor_dat_sham$genename <- rownames(cor_dat_sham)
+cor_dat_mcao <- cor(p2_dat_mcao,t(dat_mcao))
+cor_dat_mcao <- data.frame(t(cor_dat_mcao))
+cor_dat_mcao$genename <- rownames(cor_dat_mcao)
+```
+### Identifying the genes correlated with P2ry12 (i.e., r > 0.6) and shared in both MCAO and Sham groups. 
+```{r filter genes for bulk-seq}
+cor_dat_sham_pro <- subset(cor_dat_sham,t.cor_dat_sham.>0.6)
+cor_dat_mcao_pro <- subset(cor_dat_mcao,t.cor_dat_mcao.>0.6)
+cor_dat_pro_merge <- merge(cor_dat_sham_pro,cor_dat_mcao_pro,by='genename')
+cor_dat_pro_merge$plusvalue <- cor_dat_pro_merge$t.cor_dat_sham.+cor_dat_pro_merge$t.cor_dat_mcao.
+cor_dat_pro_merge <- cor_dat_pro_merge[order(cor_dat_pro_merge$plusvalue,decreasing = T),]
+```
+### The minhgeo function computes the enrichment using  minimum-hypergeometric test
+
+- bulkgene, targeted genes from bulk-seq data
+- singlegene, targeted genes from scRNA-seq data
+- p, top percentage in bulkgene
+```{r minhgeo function}
+minhgeo=function(bulkgene,singlegene,p){
+  n=length(singlegene)
+  bulkgene.p=bulkgene[1:round(length(bulkgene)*p*0.01)]
+  singlegene.n=head(singlegene,n)
+  tmp= bulkgene.p %in% singlegene.n
+  result <- mHG.test(tmp)[["p.value"]]}
+```
+### Multiple sets of P2ry12 positive correlation genes can be generated from bulk-seq and scRNA-seq data based on varying top percentage and correlation cut-off values, followed by computing enrichment p-values between them.
+```{r minimum-hypergeometric test}
+porport<- seq(0.6,0.99,0.01)
+names(porport)=porport
+topp <- seq(10,50,1)
+names(topp)=topp
+result <- lapply(topp, function(x){
+  lapply(porport, function(y){
+    p2gene_tmp <- subset(sc_data_results,value.MCAO>y &value.Sham >y)
+    test <- minhgeo(cor_dat_pro_merge$genename,p2gene_tmp$genenames,x)
+  })
+})
+result <- do.call(rbind,lapply(result,data.frame))
+result1 <- result
+result1$class <- rownames(result1)
+library(reshape2)
+result2 <- melt(result1,'class')
+result2$variable <- str_split(result2$variable,'X',simplify = T)[,2]
+result2$variable <- as.numeric(result2$variable)
+meanvalue <- result2 %>% group_by(variable) %>% summarise(mean=mean(value))
+```
+### plot enrichment p-value in different correlation coefficient.
+```{r plot enrichment p}
+colors <- colorRampPalette(c("purple","yellow"))(length(unique(result2$class)))
+figs4a <- ggplot(result2,aes(x=variable,y=value))+
+  geom_point(aes(color=class))+
+  scale_color_manual(name="Top percentage(%)",
+                     values=setNames(colors, unique(result2$class)))+
+  labs(x='Correlation coeffience',y='Enrichment P-value')+
+  geom_line(data = meanvalue,aes(x=variable,y=mean), color='red',alpha=0.8)+
+  stat_summary(fun.data=mean_se, geom="ribbon", alpha=0.4)+theme_bw()+
+  theme(legend.position = c(0.8,.6),legend.key.size = unit(3, 'mm'),
+        legend.background = element_rect(fill=alpha('white',0)))
+figs4a
+```
+
+### Compute and identify optimal correlation coefficient
+```{r plot SD}
+total_sd <- apply(result, 2, sd)
+sigma <- sd(total_sd[21:40])
+mu <- mean(total_sd[21:40])
+dat_tmp <- (total_sd-mu)/sigma
+dat_plot <- data.frame(Porportion=seq(0.6,0.99,0.01),Sigma=dat_tmp)
+
+figs4b <- ggplot(dat_plot,aes(x=Porportion,y=Sigma))+
+  geom_line(color='red',alpha=0.5) +
+  geom_point(color='black',alpha=0.7) +theme_bw()+
+  theme(legend.position = c(0.85,.7),legend.background = element_rect(fill=alpha('white',0)))+
+  labs(x="Correlation coefficient",y='Standard deviation of \n enrichment P-value')+
+  geom_vline(xintercept=0.74, linetype='dashed', color='blue')
+figs4b
+```
